@@ -1,6 +1,8 @@
 import os
 import time
 import random
+import sys
+import json
 import requests
 from flask import Flask, request, jsonify
 from threading import Thread
@@ -10,7 +12,7 @@ API_TOKEN = os.environ.get('USEDESK_API_TOKEN')
 if not API_TOKEN:
     raise RuntimeError("Переменная окружения USEDESK_API_TOKEN не установлена!")
 
-TICKET_UPDATE_URL = "https://secure.usedesk.ru/uapi/update/ticket"
+TICKET_UPDATE_URL = "https://api.usedesk.ru/update/ticket"  # официальный URL
 
 # Диапазоны для поля 27363
 RANGE_START = 33615443
@@ -20,19 +22,20 @@ THRESHOLD_NEXT = 33995641 # начиная с этого значения – м
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def update_ticket_custom_field(ticket_id: int, field_id: int, value: str) -> bool:
     """
-    Обновляет кастомное поле тикета согласно официальной документации UseDesk.
+    Обновляет кастомное поле тикета через официальный API UseDesk.
+    Использует параметры field_id и field_value.
     """
     payload = {
         "api_token": API_TOKEN,
         "ticket_id": ticket_id,
-        "field_id": str(field_id),          # ID поля (можно передать несколько через ;)
-        "field_value": value,               # значение поля
-        "silent": "true"                    # не менять статус тикета
+        "field_id": str(field_id),
+        "field_value": value,
+        "silent": "true"  # не менять статус тикета
     }
     try:
         response = requests.post(
-            "https://api.usedesk.ru/update/ticket",
-            data=payload,                    # важно: data, а не json
+            TICKET_UPDATE_URL,
+            data=payload,  # важно: data, а не json
             timeout=10
         )
         response.raise_for_status()
@@ -40,13 +43,11 @@ def update_ticket_custom_field(ticket_id: int, field_id: int, value: str) -> boo
         return result.get("status") == "success"
     except Exception as e:
         print(f"Ошибка обновления поля {field_id} тикета {ticket_id}: {e}")
+        sys.stdout.flush()
         return False
 
 def validate_email(email: str) -> bool:
-    """
-    Проверяет email через Rapid Email Validator.
-    Возвращает True только для полностью валидных email.
-    """
+    """Проверяет email через Rapid Email Validator."""
     if not email:
         return False
     try:
@@ -65,26 +66,30 @@ def validate_email(email: str) -> bool:
         return is_valid
     except Exception as e:
         print(f"Ошибка проверки email {email}: {e}")
-        # В случае сбоя считаем email валидным, чтобы не блокировать
+        # В случае сбоя считаем email валидным
         return True
 
 def get_custom_field_value(webhook_data: dict, field_id: int):
     """
-    Возвращает значение кастомного поля по его ticket_field_id.
+    Возвращает значение кастомного поля по ticket_field_id.
     Ищет в webhook_data['custom_fields'] (верхний уровень).
     """
     custom_fields = webhook_data.get('custom_fields')
     if not custom_fields:
         return None
-
     for field in custom_fields:
-        # В вашем JSON ключ — 'ticket_field_id'
         if field.get('ticket_field_id') == field_id:
             return field.get('value')
     return None
 
+# ========== ОСНОВНАЯ ЛОГИКА ==========
 def process_webhook(data: dict) -> None:
     """Фоновая обработка вебхука."""
+    # Выводим полученные данные для отладки (можно убрать после наладки)
+    data_preview = json.dumps(data, ensure_ascii=False)[:500]
+    print(f"Получен вебхук: {data_preview}")
+    sys.stdout.flush()
+
     # Извлечение данных тикета
     if 'ticket' in data and isinstance(data['ticket'], dict):
         ticket_data = data['ticket']
@@ -94,12 +99,17 @@ def process_webhook(data: dict) -> None:
     ticket_id = ticket_data.get('id')
     if not ticket_id:
         print("В вебхуке нет id тикета")
+        sys.stdout.flush()
         return
+
+    print(f"Обработка тикета {ticket_id}")
+    sys.stdout.flush()
 
     # ---------- ПРОВЕРКА EMAIL ----------
     client_email = ticket_data.get('email')
     if client_email:
         print(f"Проверяем email {client_email} для тикета {ticket_id}...")
+        sys.stdout.flush()
         if not validate_email(client_email):
             print(f"❌ Email невалиден. Обновляем поле 30668 = 1")
             update_ticket_custom_field(ticket_id, 30668, "1")
@@ -107,24 +117,27 @@ def process_webhook(data: dict) -> None:
             print(f"✅ Email валиден, поле 30668 не меняем")
     else:
         print("В тикете нет email, проверка пропущена")
+    sys.stdout.flush()
 
     # ---------- ОСНОВНАЯ ЛОГИКА С ПОЛЕМ 27363 ----------
-    # Получаем значение поля 27363 из custom_fields
-    value_27363 = get_custom_field_value(ticket_data, 27363)
+    value_27363 = get_custom_field_value(data, 27363)
     if value_27363 is None:
         print(f"Поле 27363 не найдено в custom_fields тикета {ticket_id}")
+        sys.stdout.flush()
         return
 
-    # Преобразуем в число
     try:
         num_value = int(value_27363)
+        print(f"Значение поля 27363: {num_value}")
     except (ValueError, TypeError):
         print(f"Значение поля 27363 не является числом: {value_27363}, пропускаем")
+        sys.stdout.flush()
         return
 
     # Ожидание 10–20 секунд
     wait_seconds = random.randint(10, 20)
-    print(f"Ожидание {wait_seconds} секунд перед проверкой тикета {ticket_id}...")
+    print(f"Ожидание {wait_seconds} секунд перед обновлением поля 30667...")
+    sys.stdout.flush()
     time.sleep(wait_seconds)
 
     # Определяем новое значение для поля 30667
@@ -134,6 +147,7 @@ def process_webhook(data: dict) -> None:
         new_value = "март"
     else:
         print(f"Значение {num_value} не попадает ни в один диапазон, тикет {ticket_id} пропускаем")
+        sys.stdout.flush()
         return
 
     # Обновляем поле 30667
@@ -142,6 +156,7 @@ def process_webhook(data: dict) -> None:
         print(f"✅ Тикет {ticket_id}: поле 30667 обновлено на '{new_value}'")
     else:
         print(f"❌ Тикет {ticket_id}: не удалось обновить поле 30667")
+    sys.stdout.flush()
 
 # ========== FLASK-ПРИЛОЖЕНИЕ ==========
 app = Flask(__name__)
@@ -152,6 +167,7 @@ def webhook():
     if not data:
         return jsonify({"error": "No JSON data"}), 400
 
+    # Запускаем обработку в фоновом потоке
     thread = Thread(target=process_webhook, args=(data,))
     thread.daemon = True
     thread.start()
