@@ -19,14 +19,22 @@ THRESHOLD_NEXT = 33995641 # начиная с этого значения – м
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def update_ticket_custom_field(ticket_id: int, field_id: int, value: str) -> bool:
-    """Обновляет кастомное поле тикета через API UseDesk."""
+    """
+    Обновляет кастомное поле тикета согласно официальной документации UseDesk.
+    """
     payload = {
         "api_token": API_TOKEN,
         "ticket_id": ticket_id,
-        f"field_{field_id}": value
+        "field_id": str(field_id),          # ID поля (можно передать несколько через ;)
+        "field_value": value,               # значение поля
+        "silent": "true"                    # не менять статус тикета
     }
     try:
-        response = requests.post(TICKET_UPDATE_URL, json=payload, timeout=10)
+        response = requests.post(
+            "https://api.usedesk.ru/update/ticket",
+            data=payload,                    # важно: data, а не json
+            timeout=10
+        )
         response.raise_for_status()
         result = response.json()
         return result.get("status") == "success"
