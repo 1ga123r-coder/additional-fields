@@ -12,17 +12,17 @@ API_TOKEN = os.environ.get('USEDESK_API_TOKEN')
 if not API_TOKEN:
     raise RuntimeError("Переменная окружения USEDESK_API_TOKEN не установлена!")
 
-TICKET_UPDATE_URL = "https://api.usedesk.ru/update/ticket"  # официальный URL
+TICKET_UPDATE_URL = "https://api.usedesk.ru/update/ticket"  # документированный эндпоинт
 
 # Диапазоны для поля 27363
 RANGE_START = 33615443
-RANGE_END = 33995640      # включительно
-THRESHOLD_NEXT = 33995641 # начиная с этого значения – март
+RANGE_END = 33995640          # включительно
+THRESHOLD_NEXT = 33995641     # начиная с этого значения – март
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def update_ticket_custom_field(ticket_id: int, field_id: int, value: str) -> bool:
     """
-    Обновляет кастомное поле тикета через официальный API UseDesk.
+    Обновляет кастомное поле тикета согласно официальной документации UseDesk.
     Использует параметры field_id и field_value.
     """
     payload = {
@@ -30,14 +30,10 @@ def update_ticket_custom_field(ticket_id: int, field_id: int, value: str) -> boo
         "ticket_id": ticket_id,
         "field_id": str(field_id),
         "field_value": value,
-        "silent": "true"  # не менять статус тикета
+        "silent": "true"       # не менять статус тикета
     }
     try:
-        response = requests.post(
-            TICKET_UPDATE_URL,
-            data=payload,  # важно: data, а не json
-            timeout=10
-        )
+        response = requests.post(TICKET_UPDATE_URL, data=payload, timeout=10)
         response.raise_for_status()
         result = response.json()
         return result.get("status") == "success"
@@ -47,7 +43,10 @@ def update_ticket_custom_field(ticket_id: int, field_id: int, value: str) -> boo
         return False
 
 def validate_email(email: str) -> bool:
-    """Проверяет email через Rapid Email Validator."""
+    """
+    Проверяет email через Rapid Email Validator.
+    Возвращает True только для полностью валидных email.
+    """
     if not email:
         return False
     try:
@@ -58,36 +57,26 @@ def validate_email(email: str) -> bool:
         )
         if response.status_code != 200:
             print(f"Rapid API вернул статус {response.status_code}")
+            sys.stdout.flush()
             return False
         data = response.json()
         is_valid = data.get("status") == "VALID"
         if not is_valid:
             print(f"Email {email} невалиден: {data.get('status')}")
+            sys.stdout.flush()
         return is_valid
     except Exception as e:
         print(f"Ошибка проверки email {email}: {e}")
-        # В случае сбоя считаем email валидным
+        sys.stdout.flush()
+        # В случае сбоя считаем email валидным, чтобы не блокировать обработку
         return True
 
-def get_custom_field_value(webhook_data: dict, field_id: int):
-    """
-    Возвращает значение кастомного поля по ticket_field_id.
-    Ищет в webhook_data['custom_fields'] (верхний уровень).
-    """
-    custom_fields = webhook_data.get('custom_fields')
-    if not custom_fields:
-        return None
-    for field in custom_fields:
-        if field.get('ticket_field_id') == field_id:
-            return field.get('value')
-    return None
-
-# ========== ОСНОВНАЯ ЛОГИКА ==========
+# ========== ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ВЕБХУКА ==========
 def process_webhook(data: dict) -> None:
     """Фоновая обработка вебхука."""
-    # Выводим полученные данные для отладки (можно убрать после наладки)
-    data_preview = json.dumps(data, ensure_ascii=False)[:500]
-    print(f"Получен вебхук: {data_preview}")
+    # Логируем первые 1000 символов данных для диагностики
+    data_preview = json.dumps(data, ensure_ascii=False)[:1000]
+    print(f"=== ПОЛУЧЕН ВЕБХУК: {data_preview}")
     sys.stdout.flush()
 
     # Извлечение данных тикета
@@ -119,16 +108,45 @@ def process_webhook(data: dict) -> None:
         print("В тикете нет email, проверка пропущена")
     sys.stdout.flush()
 
-    # ---------- ОСНОВНАЯ ЛОГИКА С ПОЛЕМ 27363 ----------
-    value_27363 = get_custom_field_value(data, 27363)
+    # ---------- ПОЛУЧЕНИЕ ПОЛЯ 27363 ----------
+    # Ищем custom_fields на верхнем уровне (правильная структура)
+    custom_fields = data.get('custom_fields')
+    if not custom_fields:
+        # Если нет на верхнем, попробуем внутри ticket (на всякий случай)
+        ticket = data.get('ticket', {})
+        custom_fields = ticket.get('custom_fields')
+        if custom_fields:
+            print("custom_fields найдены внутри ticket")
+        else:
+            print("custom_fields не найдены ни на верхнем уровне, ни внутри ticket")
+            sys.stdout.flush()
+            return
+    else:
+        print("custom_fields найдены на верхнем уровне")
+
+    print(f"Количество полей в custom_fields: {len(custom_fields)}")
+    # Выведем все ticket_field_id для диагностики
+    field_ids = [f.get('ticket_field_id') for f in custom_fields]
+    print(f"Список ticket_field_id: {field_ids}")
+    sys.stdout.flush()
+
+    # Ищем поле 27363
+    value_27363 = None
+    for field in custom_fields:
+        if field.get('ticket_field_id') == 27363:
+            value_27363 = field.get('value')
+            print(f"Найдено поле 27363 со значением: {value_27363}")
+            break
+
     if value_27363 is None:
         print(f"Поле 27363 не найдено в custom_fields тикета {ticket_id}")
         sys.stdout.flush()
         return
 
+    # Преобразуем в число
     try:
         num_value = int(value_27363)
-        print(f"Значение поля 27363: {num_value}")
+        print(f"Числовое значение поля 27363: {num_value}")
     except (ValueError, TypeError):
         print(f"Значение поля 27363 не является числом: {value_27363}, пропускаем")
         sys.stdout.flush()
@@ -136,7 +154,7 @@ def process_webhook(data: dict) -> None:
 
     # Ожидание 10–20 секунд
     wait_seconds = random.randint(10, 20)
-    print(f"Ожидание {wait_seconds} секунд перед обновлением поля 30667...")
+    print(f"Ожидание {wait_seconds} секунд перед обновлением...")
     sys.stdout.flush()
     time.sleep(wait_seconds)
 
