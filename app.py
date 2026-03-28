@@ -68,14 +68,25 @@ def validate_email(email: str) -> bool:
         # В случае сбоя считаем email валидным, чтобы не блокировать
         return True
 
-def get_custom_field_value(ticket_data: dict, field_id: int):
+def get_custom_field_value(webhook_data: dict, field_id: int):
     """
-    Извлекает значение кастомного поля из массива custom_fields.
-    Возвращает значение или None, если поле не найдено.
+    Ищет значение кастомного поля в вебхуке.
+    Сначала ищет в webhook_data['custom_fields'] (верхний уровень),
+    затем в webhook_data['ticket']['custom_fields'] (на всякий случай).
     """
-    custom_fields = ticket_data.get('custom_fields', [])
+    # Сначала ищем на верхнем уровне
+    custom_fields = webhook_data.get('custom_fields')
+    if not custom_fields:
+        # Если нет, пробуем внутри ticket
+        ticket = webhook_data.get('ticket', {})
+        custom_fields = ticket.get('custom_fields')
+    
+    if not custom_fields:
+        return None
+    
     for field in custom_fields:
-        if field.get('ticket_field_id') == field_id:
+        # ID может быть в ключе 'ticket_field_id' или 'id'
+        if field.get('ticket_field_id') == field_id or field.get('id') == field_id:
             return field.get('value')
     return None
 
