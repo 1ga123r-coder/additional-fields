@@ -12,28 +12,30 @@ API_TOKEN = os.environ.get('USEDESK_API_TOKEN')
 if not API_TOKEN:
     raise RuntimeError("Переменная окружения USEDESK_API_TOKEN не установлена!")
 
-TICKET_UPDATE_URL = "https://api.usedesk.ru/update/ticket"
+# URL для обновления (как в Postman)
+TICKET_UPDATE_URL = "https://secure.usedesk.ru/uapi/update/ticket"
+# URL для получения данных тикета (оставляем старый, работает)
 TICKET_GET_URL = "https://api.usedesk.ru/ticket"
 
 # Диапазоны для поля 27363
 RANGE_1_START = 34006983
-RANGE_1_END = 34018112      # включительно -> значение "161741"
-THRESHOLD = 34018113         # начиная с этого значения -> "164754"
+RANGE_1_END = 34018112      # включительно -> значение 161741
+THRESHOLD = 34018113         # начиная с этого значения -> 164754
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def update_ticket_custom_field(ticket_id: int, field_id: int, value: str) -> bool:
     """
-    Обновляет кастомное поле тикета согласно официальной документации UseDesk.
+    Обновляет кастомное поле тикета через JSON API (как в Postman).
+    value передаётся как число (int), т.к. поле 30187 ожидает числовой ID.
     """
     payload = {
         "api_token": API_TOKEN,
         "ticket_id": ticket_id,
         "field_id": str(field_id),
-        "field_value": value,
-        "silent": "true"       # не менять статус тикета
+        "field_value": int(value)      # преобразуем в число, как в ручном запросе
     }
     try:
-        response = requests.post(TICKET_UPDATE_URL, data=payload, timeout=10)
+        response = requests.post(TICKET_UPDATE_URL, json=payload, timeout=10)
         response.raise_for_status()
         result = response.json()
         return result.get("status") == "success"
@@ -45,10 +47,7 @@ def update_ticket_custom_field(ticket_id: int, field_id: int, value: str) -> boo
         return False
 
 def validate_email(email: str) -> bool:
-    """
-    Проверяет email через Rapid Email Validator.
-    Возвращает True только для полностью валидных email.
-    """
+    """Проверяет email через Rapid Email Validator."""
     if not email:
         return False
     try:
@@ -70,14 +69,10 @@ def validate_email(email: str) -> bool:
     except Exception as e:
         print(f"Ошибка проверки email {email}: {e}")
         sys.stdout.flush()
-        # В случае сбоя считаем email валидным, чтобы не блокировать обработку
-        return True
+        return True  # при сбое считаем валидным
 
 def get_ticket_details(ticket_id: int):
-    """
-    Получает полные данные тикета через API UseDesk.
-    Возвращает словарь с данными тикета или None.
-    """
+    """Получает полные данные тикета через API UseDesk."""
     payload = {"api_token": API_TOKEN, "ticket_id": ticket_id}
     try:
         response = requests.post(TICKET_GET_URL, json=payload, timeout=10)
@@ -88,20 +83,16 @@ def get_ticket_details(ticket_id: int):
         return None
 
 def get_custom_fields_from_ticket(ticket_id: int):
-    """
-    Пытается получить custom_fields из вебхука или через API.
-    Возвращает список полей или None.
-    """
-    # Сначала пробуем получить через API (наиболее надёжно)
+    """Пытается получить custom_fields из API."""
     ticket_data = get_ticket_details(ticket_id)
     if ticket_data and 'custom_fields' in ticket_data:
         return ticket_data['custom_fields']
     return None
 
-# ========== ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ВЕБХУКА ==========
+# ========== ОСНОВНАЯ ЛОГИКА ==========
 def process_webhook(data: dict) -> None:
     """Фоновая обработка вебхука."""
-    # Логируем первые 1000 символов данных для диагностики
+    # Логируем первые 1000 символов
     data_preview = json.dumps(data, ensure_ascii=False)[:1000]
     print(f"=== ПОЛУЧЕН ВЕБХУК: {data_preview}")
     sys.stdout.flush()
@@ -128,6 +119,7 @@ def process_webhook(data: dict) -> None:
         sys.stdout.flush()
         if not validate_email(client_email):
             print(f"❌ Email невалиден. Обновляем поле 30668 = 1")
+            # Для поля 30668 оставляем строку "1" (если нужно число — измените)
             update_ticket_custom_field(ticket_id, 30668, "1")
         else:
             print(f"✅ Email валиден, поле 30668 не меняем")
@@ -136,10 +128,8 @@ def process_webhook(data: dict) -> None:
     sys.stdout.flush()
 
     # ---------- ПОЛУЧЕНИЕ ПОЛЯ 27363 ----------
-    # Сначала пробуем взять custom_fields из вебхука (верхний уровень)
     custom_fields = data.get('custom_fields')
     if not custom_fields:
-        # Если нет в вебхуке, получаем через API
         print("custom_fields не найдены в вебхуке, запрашиваем через API...")
         custom_fields = get_custom_fields_from_ticket(ticket_id)
         if not custom_fields:
@@ -151,7 +141,7 @@ def process_webhook(data: dict) -> None:
     else:
         print("custom_fields найдены в вебхуке")
 
-    print(f"Количество полей в custom_fields: {len(custom_fields)}")
+    print(f"Количество полей: {len(custom_fields)}")
     field_ids = [f.get('ticket_field_id') for f in custom_fields]
     print(f"Список ticket_field_id: {field_ids}")
     sys.stdout.flush()
@@ -169,7 +159,6 @@ def process_webhook(data: dict) -> None:
         sys.stdout.flush()
         return
 
-    # Преобразуем в число
     try:
         num_value = int(value_27363)
         print(f"Числовое значение поля 27363: {num_value}")
@@ -178,13 +167,13 @@ def process_webhook(data: dict) -> None:
         sys.stdout.flush()
         return
 
-    # Ожидание 10–20 секунд (может быть, нужно, чтобы поле 30187 стало доступно для обновления)
+    # Ожидание 10–20 секунд
     wait_seconds = random.randint(10, 20)
     print(f"Ожидание {wait_seconds} секунд перед обновлением...")
     sys.stdout.flush()
     time.sleep(wait_seconds)
 
-    # Определяем новое значение для поля 30187
+    # Определяем новое значение для поля 30187 (числовые ID)
     if RANGE_1_START <= num_value <= RANGE_1_END:
         new_value = "161741"
     elif num_value >= THRESHOLD:
@@ -197,12 +186,12 @@ def process_webhook(data: dict) -> None:
     # Обновляем поле 30187
     success = update_ticket_custom_field(ticket_id, 30187, new_value)
     if success:
-        print(f"✅ Тикет {ticket_id}: поле 30187 обновлено на '{new_value}'")
+        print(f"✅ Тикет {ticket_id}: поле 30187 обновлено на {new_value}")
     else:
         print(f"❌ Тикет {ticket_id}: не удалось обновить поле 30187")
     sys.stdout.flush()
 
-# ========== FLASK-ПРИЛОЖЕНИЕ ==========
+# ========== FLASK ==========
 app = Flask(__name__)
 
 @app.route('/webhook', methods=['POST'])
@@ -210,11 +199,9 @@ def webhook():
     data = request.get_json()
     if not data:
         return jsonify({"error": "No JSON data"}), 400
-
     thread = Thread(target=process_webhook, args=(data,))
     thread.daemon = True
     thread.start()
-
     return jsonify({"status": "accepted"}), 200
 
 @app.route('/health', methods=['GET'])
