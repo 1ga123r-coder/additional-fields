@@ -12,27 +12,22 @@ API_TOKEN = os.environ.get('USEDESK_API_TOKEN')
 if not API_TOKEN:
     raise RuntimeError("Переменная окружения USEDESK_API_TOKEN не установлена!")
 
-# URL для обновления (как в Postman)
 TICKET_UPDATE_URL = "https://secure.usedesk.ru/uapi/update/ticket"
-# URL для получения данных тикета (оставляем старый, работает)
 TICKET_GET_URL = "https://api.usedesk.ru/ticket"
 
 # Диапазоны для поля 27363
 RANGE_1_START = 34006983
-RANGE_1_END = 34018112      # включительно -> значение 161741
-THRESHOLD = 34018113         # начиная с этого значения -> 164754
+RANGE_1_END = 34018112      # включительно -> поле 30669 = 164757
+THRESHOLD = 34018113         # начиная с этого значения -> поле 30669 = 164758
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def update_ticket_custom_field(ticket_id: int, field_id: int, value: str) -> bool:
-    """
-    Обновляет кастомное поле тикета через JSON API (как в Postman).
-    value передаётся как число (int), т.к. поле 30187 ожидает числовой ID.
-    """
+    """Обновляет кастомное поле тикета через JSON API (числовое значение)."""
     payload = {
         "api_token": API_TOKEN,
         "ticket_id": ticket_id,
         "field_id": str(field_id),
-        "field_value": int(value)      # преобразуем в число, как в ручном запросе
+        "field_value": int(value)          # значение как число
     }
     try:
         response = requests.post(TICKET_UPDATE_URL, json=payload, timeout=10)
@@ -69,7 +64,7 @@ def validate_email(email: str) -> bool:
     except Exception as e:
         print(f"Ошибка проверки email {email}: {e}")
         sys.stdout.flush()
-        return True  # при сбое считаем валидным
+        return True      # при сбое считаем валидным
 
 def get_ticket_details(ticket_id: int):
     """Получает полные данные тикета через API UseDesk."""
@@ -83,7 +78,7 @@ def get_ticket_details(ticket_id: int):
         return None
 
 def get_custom_fields_from_ticket(ticket_id: int):
-    """Пытается получить custom_fields из API."""
+    """Возвращает custom_fields из API, если они там есть."""
     ticket_data = get_ticket_details(ticket_id)
     if ticket_data and 'custom_fields' in ticket_data:
         return ticket_data['custom_fields']
@@ -92,12 +87,10 @@ def get_custom_fields_from_ticket(ticket_id: int):
 # ========== ОСНОВНАЯ ЛОГИКА ==========
 def process_webhook(data: dict) -> None:
     """Фоновая обработка вебхука."""
-    # Логируем первые 1000 символов
     data_preview = json.dumps(data, ensure_ascii=False)[:1000]
     print(f"=== ПОЛУЧЕН ВЕБХУК: {data_preview}")
     sys.stdout.flush()
 
-    # Извлечение данных тикета
     if 'ticket' in data and isinstance(data['ticket'], dict):
         ticket_data = data['ticket']
     else:
@@ -119,7 +112,6 @@ def process_webhook(data: dict) -> None:
         sys.stdout.flush()
         if not validate_email(client_email):
             print(f"❌ Email невалиден. Обновляем поле 30668 = 1")
-            # Для поля 30668 оставляем строку "1" (если нужно число — измените)
             update_ticket_custom_field(ticket_id, 30668, "1")
         else:
             print(f"✅ Email валиден, поле 30668 не меняем")
@@ -146,7 +138,6 @@ def process_webhook(data: dict) -> None:
     print(f"Список ticket_field_id: {field_ids}")
     sys.stdout.flush()
 
-    # Ищем поле 27363
     value_27363 = None
     for field in custom_fields:
         if field.get('ticket_field_id') == 27363:
@@ -173,22 +164,22 @@ def process_webhook(data: dict) -> None:
     sys.stdout.flush()
     time.sleep(wait_seconds)
 
-    # Определяем новое значение для поля 30187 (числовые ID)
+    # Определяем новое значение для поля 30669
     if RANGE_1_START <= num_value <= RANGE_1_END:
-        new_value = "161741"
+        new_value = "164757"
     elif num_value >= THRESHOLD:
-        new_value = "164754"
+        new_value = "164758"
     else:
         print(f"Значение {num_value} не попадает ни в один диапазон, тикет {ticket_id} пропускаем")
         sys.stdout.flush()
         return
 
-    # Обновляем поле 30187
-    success = update_ticket_custom_field(ticket_id, 30187, new_value)
+    # Обновляем поле 30669
+    success = update_ticket_custom_field(ticket_id, 30669, new_value)
     if success:
-        print(f"✅ Тикет {ticket_id}: поле 30187 обновлено на {new_value}")
+        print(f"✅ Тикет {ticket_id}: поле 30669 обновлено на {new_value}")
     else:
-        print(f"❌ Тикет {ticket_id}: не удалось обновить поле 30187")
+        print(f"❌ Тикет {ticket_id}: не удалось обновить поле 30669")
     sys.stdout.flush()
 
 # ========== FLASK ==========
