@@ -1,8 +1,5 @@
 import os
-import time
-import random
 import sys
-import json
 import requests
 from flask import Flask, request, jsonify
 from threading import Thread
@@ -12,60 +9,12 @@ API_TOKEN = os.environ.get('USEDESK_API_TOKEN')
 if not API_TOKEN:
     raise RuntimeError("Переменная окружения USEDESK_API_TOKEN не установлена!")
 
-TICKET_UPDATE_URL = "https://secure.usedesk.ru/uapi/update/ticket"
 TICKET_GET_URL = "https://api.usedesk.ru/ticket"
+TICKET_UPDATE_URL = "https://secure.usedesk.ru/uapi/update/ticket"
 
-# Диапазоны для поля 27363
-RANGE_1_START = 34006983
-RANGE_1_END = 34018112      # включительно -> поле 30669 = 164757
-THRESHOLD = 34018113         # начиная с этого значения -> поле 30669 = 164758
+ERROR_TAG = "testerrormail"
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-def update_ticket_custom_field(ticket_id: int, field_id: int, value: str) -> bool:
-    """Обновляет кастомное поле тикета через JSON API (числовое значение)."""
-    payload = {
-        "api_token": API_TOKEN,
-        "ticket_id": ticket_id,
-        "field_id": str(field_id),
-        "field_value": int(value)          # значение как число
-    }
-    try:
-        response = requests.post(TICKET_UPDATE_URL, json=payload, timeout=10)
-        response.raise_for_status()
-        result = response.json()
-        return result.get("status") == "success"
-    except Exception as e:
-        print(f"Ошибка обновления поля {field_id} тикета {ticket_id}: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            print(f"Ответ сервера: {e.response.text}")
-        sys.stdout.flush()
-        return False
-
-def validate_email(email: str) -> bool:
-    """Проверяет email через Rapid Email Validator."""
-    if not email:
-        return False
-    try:
-        response = requests.get(
-            "https://rapid-email-verifier.fly.dev/api/validate",
-            params={"email": email},
-            timeout=10
-        )
-        if response.status_code != 200:
-            print(f"Rapid API вернул статус {response.status_code}")
-            sys.stdout.flush()
-            return False
-        data = response.json()
-        is_valid = data.get("status") == "VALID"
-        if not is_valid:
-            print(f"Email {email} невалиден: {data.get('status')}")
-            sys.stdout.flush()
-        return is_valid
-    except Exception as e:
-        print(f"Ошибка проверки email {email}: {e}")
-        sys.stdout.flush()
-        return True      # при сбое считаем валидным
-
 def get_ticket_details(ticket_id: int):
     """Получает полные данные тикета через API UseDesk."""
     payload = {"api_token": API_TOKEN, "ticket_id": ticket_id}
@@ -75,22 +24,43 @@ def get_ticket_details(ticket_id: int):
         return response.json()
     except Exception as e:
         print(f"Ошибка получения данных тикета {ticket_id}: {e}")
+        sys.stdout.flush()
         return None
 
-def get_custom_fields_from_ticket(ticket_id: int):
-    """Возвращает custom_fields из API, если они там есть."""
-    ticket_data = get_ticket_details(ticket_id)
-    if ticket_data and 'custom_fields' in ticket_data:
-        return ticket_data['custom_fields']
-    return None
+def add_tag_to_ticket(ticket_id: int, tag: str) -> bool:
+    """Добавляет тег к тикету через эндпоинт /uapi/update/ticket."""
+    payload = {
+        "api_token": API_TOKEN,
+        "ticket_id": ticket_id,
+        "tag": tag
+    }
+    try:
+        response = requests.post(TICKET_UPDATE_URL, json=payload, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        return result.get("status") == "success"
+    except Exception as e:
+        print(f"Ошибка при добавлении тега {tag} к тикету {ticket_id}: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"Ответ сервера: {e.response.text}")
+        sys.stdout.flush()
+        return False
+
+def check_comments_for_trigger_error(ticket_data: dict) -> bool:
+    """Проверяет, есть ли в комментариях тикета комментарий с from='trigger' и type='error'."""
+    comments = ticket_data.get("comments", [])
+    for comment in comments:
+        if comment.get("from") == "trigger" and comment.get("type") == "error":
+            return True
+    return False
 
 # ========== ОСНОВНАЯ ЛОГИКА ==========
 def process_webhook(data: dict) -> None:
     """Фоновая обработка вебхука."""
-    data_preview = json.dumps(data, ensure_ascii=False)[:1000]
-    print(f"=== ПОЛУЧЕН ВЕБХУК: {data_preview}")
+    print(f"=== ПОЛУЧЕН ВЕБХУК: {data}")
     sys.stdout.flush()
 
+    # Извлекаем ID тикета
     if 'ticket' in data and isinstance(data['ticket'], dict):
         ticket_data = data['ticket']
     else:
@@ -105,81 +75,24 @@ def process_webhook(data: dict) -> None:
     print(f"Обработка тикета {ticket_id}")
     sys.stdout.flush()
 
-    # ---------- ПРОВЕРКА EMAIL ----------
-    client_email = ticket_data.get('email')
-    if client_email:
-        print(f"Проверяем email {client_email} для тикета {ticket_id}...")
+    # Получаем полные данные тикета (включая комментарии)
+    full_ticket = get_ticket_details(ticket_id)
+    if not full_ticket:
+        print(f"Не удалось получить данные тикета {ticket_id}")
         sys.stdout.flush()
-        if not validate_email(client_email):
-            print(f"❌ Email невалиден. Обновляем поле 30668 = 1")
-            update_ticket_custom_field(ticket_id, 30668, "1")
+        return
+
+    # Проверяем наличие ошибки от триггера
+    if check_comments_for_trigger_error(full_ticket):
+        print(f"Найден комментарий с from='trigger' и type='error'. Добавляем тег {ERROR_TAG}...")
+        success = add_tag_to_ticket(ticket_id, ERROR_TAG)
+        if success:
+            print(f"✅ Тикет {ticket_id}: тег {ERROR_TAG} успешно добавлен")
         else:
-            print(f"✅ Email валиден, поле 30668 не меняем")
+            print(f"❌ Тикет {ticket_id}: не удалось добавить тег {ERROR_TAG}")
     else:
-        print("В тикете нет email, проверка пропущена")
-    sys.stdout.flush()
+        print(f"ℹ️ Тикет {ticket_id}: комментариев с trigger/error не найдено")
 
-    # ---------- ПОЛУЧЕНИЕ ПОЛЯ 27363 ----------
-    custom_fields = data.get('custom_fields')
-    if not custom_fields:
-        print("custom_fields не найдены в вебхуке, запрашиваем через API...")
-        custom_fields = get_custom_fields_from_ticket(ticket_id)
-        if not custom_fields:
-            print(f"Не удалось получить custom_fields для тикета {ticket_id}")
-            sys.stdout.flush()
-            return
-        else:
-            print("custom_fields получены через API")
-    else:
-        print("custom_fields найдены в вебхуке")
-
-    print(f"Количество полей: {len(custom_fields)}")
-    field_ids = [f.get('ticket_field_id') for f in custom_fields]
-    print(f"Список ticket_field_id: {field_ids}")
-    sys.stdout.flush()
-
-    value_27363 = None
-    for field in custom_fields:
-        if field.get('ticket_field_id') == 27363:
-            value_27363 = field.get('value')
-            print(f"Найдено поле 27363 со значением: {value_27363}")
-            break
-
-    if value_27363 is None:
-        print(f"Поле 27363 не найдено в custom_fields тикета {ticket_id}")
-        sys.stdout.flush()
-        return
-
-    try:
-        num_value = int(value_27363)
-        print(f"Числовое значение поля 27363: {num_value}")
-    except (ValueError, TypeError):
-        print(f"Значение поля 27363 не является числом: {value_27363}, пропускаем")
-        sys.stdout.flush()
-        return
-
-    # Ожидание 10–20 секунд
-    wait_seconds = random.randint(10, 20)
-    print(f"Ожидание {wait_seconds} секунд перед обновлением...")
-    sys.stdout.flush()
-    time.sleep(wait_seconds)
-
-    # Определяем новое значение для поля 30669
-    if RANGE_1_START <= num_value <= RANGE_1_END:
-        new_value = "164757"
-    elif num_value >= THRESHOLD:
-        new_value = "164758"
-    else:
-        print(f"Значение {num_value} не попадает ни в один диапазон, тикет {ticket_id} пропускаем")
-        sys.stdout.flush()
-        return
-
-    # Обновляем поле 30669
-    success = update_ticket_custom_field(ticket_id, 30669, new_value)
-    if success:
-        print(f"✅ Тикет {ticket_id}: поле 30669 обновлено на {new_value}")
-    else:
-        print(f"❌ Тикет {ticket_id}: не удалось обновить поле 30669")
     sys.stdout.flush()
 
 # ========== FLASK ==========
