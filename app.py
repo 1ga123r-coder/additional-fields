@@ -1,5 +1,7 @@
 import os
 import sys
+import time
+import random
 import requests
 from flask import Flask, request, jsonify
 from threading import Thread
@@ -13,6 +15,10 @@ TICKET_GET_URL = "https://api.usedesk.ru/ticket"
 TICKET_UPDATE_URL = "https://secure.usedesk.ru/uapi/update/ticket"
 
 ERROR_TAG = "testerrormail"
+
+# Минимальная и максимальная задержка перед проверкой (в секундах)
+MIN_DELAY = 60
+MAX_DELAY = 120
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def get_ticket_details(ticket_id: int):
@@ -56,7 +62,7 @@ def check_comments_for_trigger_error(ticket_data: dict) -> bool:
 
 # ========== ОСНОВНАЯ ЛОГИКА ==========
 def process_webhook(data: dict) -> None:
-    """Фоновая обработка вебхука."""
+    """Фоновая обработка вебхука с задержкой перед проверкой."""
     print(f"=== ПОЛУЧЕН ВЕБХУК: {data}")
     sys.stdout.flush()
 
@@ -72,7 +78,10 @@ def process_webhook(data: dict) -> None:
         sys.stdout.flush()
         return
 
-    print(f"Обработка тикета {ticket_id}")
+    print(f"Тикет {ticket_id} получен. Ожидание {MIN_DELAY}-{MAX_DELAY} секунд перед проверкой...")
+    delay = random.randint(MIN_DELAY, MAX_DELAY)
+    time.sleep(delay)
+    print(f"Задержка завершена. Проверяем тикет {ticket_id}...")
     sys.stdout.flush()
 
     # Получаем полные данные тикета (включая комментарии)
